@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl
 from typing import Optional, List, Dict, Any
 import yt_dlp
@@ -10,6 +11,8 @@ import asyncio
 import aiofiles
 from datetime import datetime
 import re
+import concurrent.futures
+import threading
 
 app = FastAPI(
     title="Multi-Platform Video Downloader API",
@@ -21,7 +24,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -60,9 +63,23 @@ class DownloadResponse(BaseModel):
     download_id: Optional[str] = None
     info: Optional[VideoInfo] = None
     download_url: Optional[str] = None
+    file_url: Optional[str] = None
 
-# Global storage for download tasks
+class JobStatus(BaseModel):
+    download_id: str
+    status: str  # pending, downloading, completed, failed
+    progress: Optional[float] = None
+    info: Optional[VideoInfo] = None
+    file_path: Optional[str] = None
+    filename: Optional[str] = None
+    file_size: Optional[int] = None
+    error: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
+
+# Global storage for download tasks and thread pool
 download_tasks = {}
+thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 class VideoDownloaderService:
     def __init__(self):
@@ -138,7 +155,7 @@ class VideoDownloaderService:
                 
                 # Extract formats info
                 formats = []
-                if 'formats' in info:
+                if info and 'formats' in info and info['formats']:
                     for fmt in info['formats']:
                         formats.append({
                             'format_id': fmt.get('format_id'),
@@ -148,30 +165,55 @@ class VideoDownloaderService:
                             'quality': fmt.get('quality')
                         })
                 
-                return VideoInfo(
-                    title=info.get('title', 'Unknown'),
-                    duration=info.get('duration'),
-                    uploader=info.get('uploader'),
-                    view_count=info.get('view_count'),
-                    upload_date=info.get('upload_date'),
-                    thumbnail=info.get('thumbnail'),
-                    description=info.get('description', '')[:500] + "..." if info.get('description') and len(info.get('description', '')) > 500 else info.get('description', ''),
-                    formats=formats[:10],  # Limit to first 10 formats
-                    platform=self.extract_platform(url)
-                )
+                if info:
+                    description = info.get('description', '')
+                    if description and len(description) > 500:
+                        description = description[:500] + "..."
+                    
+                    return VideoInfo(
+                        title=info.get('title', 'Unknown'),
+                        duration=info.get('duration'),
+                        uploader=info.get('uploader'),
+                        view_count=info.get('view_count'),
+                        upload_date=info.get('upload_date'),
+                        thumbnail=info.get('thumbnail'),
+                        description=description,
+                        formats=formats[:10],  # Limit to first 10 formats
+                        platform=self.extract_platform(url)
+                    )
+                else:
+                    raise HTTPException(status_code=400, detail="Failed to extract video info")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to extract video info: {str(e)}")
     
-    async def download_video(self, url: str, format_selector="best", quality="720p", audio_only=False, extract_audio=False) -> Dict[str, Any]:
-        """Download video and return file path"""
-        download_id = str(uuid.uuid4())
-        
+    def download_video_sync(self, url: str, download_id: str, format_selector="best", quality="720p", audio_only=False, extract_audio=False):
+        """Synchronous video download function for thread execution"""
         try:
+            # Update status to downloading
+            if download_id in download_tasks:
+                download_tasks[download_id]['status'] = 'downloading'
+            
             ydl_opts = self.get_ydl_opts(format_selector, quality, audio_only, extract_audio)
+            
+            # Add progress hook
+            def progress_hook(d):
+                if d['status'] == 'downloading':
+                    if 'total_bytes' in d and d['total_bytes']:
+                        progress = (d['downloaded_bytes'] / d['total_bytes']) * 100
+                        if download_id in download_tasks:
+                            download_tasks[download_id]['progress'] = progress
+                elif d['status'] == 'finished':
+                    if download_id in download_tasks:
+                        download_tasks[download_id]['progress'] = 100.0
+            
+            ydl_opts['progress_hooks'] = [progress_hook]
             
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 # Extract info first
                 info = ydl.extract_info(url, download=False)
+                
+                if not info:
+                    raise Exception("Failed to extract video information")
                 
                 # Download the video
                 ydl.download([url])
@@ -186,13 +228,31 @@ class VideoDownloaderService:
                 # Look for the file
                 downloaded_file = None
                 for file in os.listdir(self.download_dir):
-                    if video_id in file or safe_title in file:
+                    if video_id in file:
                         downloaded_file = file
                         break
+                
+                if not downloaded_file:
+                    # Try matching by title
+                    for file in os.listdir(self.download_dir):
+                        if any(word in file.lower() for word in safe_title.lower().split('_')[:3]):
+                            downloaded_file = file
+                            break
                 
                 if downloaded_file:
                     file_path = os.path.join(self.download_dir, downloaded_file)
                     file_size = os.path.getsize(file_path)
+                    
+                    # Update task with completion
+                    if download_id in download_tasks:
+                        download_tasks[download_id].update({
+                            'status': 'completed',
+                            'file_path': file_path,
+                            'filename': downloaded_file,
+                            'file_size': file_size,
+                            'completed_at': datetime.now().isoformat(),
+                            'progress': 100.0
+                        })
                     
                     return {
                         'download_id': download_id,
@@ -206,7 +266,36 @@ class VideoDownloaderService:
                     raise Exception("Downloaded file not found")
                     
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Download failed: {str(e)}")
+            # Update task with error
+            if download_id in download_tasks:
+                download_tasks[download_id].update({
+                    'status': 'failed',
+                    'error': str(e),
+                    'completed_at': datetime.now().isoformat()
+                })
+            raise e
+    
+    async def start_download(self, url: str, format_selector="best", quality="720p", audio_only=False, extract_audio=False) -> str:
+        """Start async video download and return download_id"""
+        download_id = str(uuid.uuid4())
+        
+        # Create initial task entry
+        download_tasks[download_id] = {
+            'status': 'pending',
+            'progress': 0.0,
+            'created_at': datetime.now().isoformat(),
+            'url': url
+        }
+        
+        # Submit to thread pool
+        loop = asyncio.get_event_loop()
+        future = loop.run_in_executor(
+            thread_pool,
+            self.download_video_sync,
+            url, download_id, format_selector, quality, audio_only, extract_audio
+        )
+        
+        return download_id
 
 # Initialize service
 downloader_service = VideoDownloaderService()
@@ -226,9 +315,10 @@ async def root():
         "endpoints": {
             "/": "API information",
             "/video/info": "Get video information",
-            "/video/download": "Download single video",
-            "/video/batch": "Download multiple videos",
-            "/downloads/{download_id}": "Get download status"
+            "/video/download": "Start video download",
+            "/video/batch": "Start multiple video downloads",
+            "/downloads/{download_id}": "Get download status and progress",
+            "/files/{download_id}": "Download completed video file"
         }
     }
 
@@ -248,31 +338,26 @@ async def download_video(request: VideoDownloadRequest, background_tasks: Backgr
         # Get video info first
         info = await downloader_service.get_video_info(str(request.url))
         
-        # Download the video
-        result = await downloader_service.download_video(
+        # Start the download
+        download_id = await downloader_service.start_download(
             str(request.url),
-            request.format,
-            request.quality,
-            request.audio_only,
-            request.extract_audio
+            request.format or "best",
+            request.quality or "720p",
+            request.audio_only or False,
+            request.extract_audio or False
         )
         
-        # Store download task info
-        download_tasks[result['download_id']] = {
-            'status': 'completed',
-            'info': info.dict(),
-            'file_path': result['file_path'],
-            'filename': result['filename'],
-            'file_size': result['file_size'],
-            'created_at': datetime.now().isoformat()
-        }
+        # Store video info in task
+        if download_id in download_tasks:
+            download_tasks[download_id]['info'] = info.dict()
         
         return DownloadResponse(
-            status="success",
-            message="Video downloaded successfully",
-            download_id=result['download_id'],
+            status="accepted",
+            message="Download started. Use download_id to check progress.",
+            download_id=download_id,
             info=info,
-            download_url=f"/downloads/{result['download_id']}"
+            download_url=f"/downloads/{download_id}",
+            file_url=f"/files/{download_id}"
         )
         
     except Exception as e:
@@ -289,28 +374,23 @@ async def batch_download(request: BatchDownloadRequest):
             # Get video info
             info = await downloader_service.get_video_info(str(url))
             
-            # Download video
-            result = await downloader_service.download_video(
+            # Start download
+            download_id = await downloader_service.start_download(
                 str(url),
-                request.format,
-                request.quality,
-                request.audio_only
+                request.format or "best",
+                request.quality or "720p",
+                request.audio_only or False,
+                False  # extract_audio for batch downloads
             )
             
-            # Store task info
-            download_tasks[result['download_id']] = {
-                'status': 'completed',
-                'info': info.dict(),
-                'file_path': result['file_path'],
-                'filename': result['filename'],
-                'file_size': result['file_size'],
-                'created_at': datetime.now().isoformat()
-            }
+            # Store info in task
+            if download_id in download_tasks:
+                download_tasks[download_id]['info'] = info.dict()
             
             results.append({
                 'url': str(url),
-                'status': 'success',
-                'download_id': result['download_id'],
+                'status': 'started',
+                'download_id': download_id,
                 'title': info.title,
                 'platform': info.platform
             })
@@ -337,32 +417,86 @@ async def get_download_info(download_id: str):
         raise HTTPException(status_code=404, detail="Download not found")
     
     task_info = download_tasks[download_id]
-    return {
+    response = {
         'download_id': download_id,
         'status': task_info['status'],
-        'info': task_info['info'],
-        'filename': task_info['filename'],
-        'file_size': task_info['file_size'],
+        'progress': task_info.get('progress', 0.0),
         'created_at': task_info['created_at']
     }
+    
+    # Add optional fields if available
+    if 'info' in task_info:
+        response['info'] = task_info['info']
+    if 'filename' in task_info:
+        response['filename'] = task_info['filename']
+    if 'file_size' in task_info:
+        response['file_size'] = task_info['file_size']
+    if 'completed_at' in task_info:
+        response['completed_at'] = task_info['completed_at']
+    if 'error' in task_info:
+        response['error'] = task_info['error']
+    if task_info['status'] == 'completed':
+        response['file_url'] = f"/files/{download_id}"
+    
+    return response
+
+@app.get("/files/{download_id}")
+async def download_file(download_id: str):
+    """Download the actual video file"""
+    if download_id not in download_tasks:
+        raise HTTPException(status_code=404, detail="Download not found")
+    
+    task_info = download_tasks[download_id]
+    
+    if task_info['status'] != 'completed':
+        raise HTTPException(status_code=400, detail=f"Download not completed. Status: {task_info['status']}")
+    
+    if 'file_path' not in task_info or not os.path.exists(task_info['file_path']):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    file_path = task_info['file_path']
+    filename = task_info.get('filename', 'video.mp4')
+    
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type='application/octet-stream'
+    )
 
 @app.get("/downloads")
 async def list_downloads():
     """List all downloads"""
+    downloads = []
+    for download_id, task in download_tasks.items():
+        download_info = {
+            'download_id': download_id,
+            'status': task['status'],
+            'created_at': task['created_at'],
+            'progress': task.get('progress', 0.0)
+        }
+        
+        # Add optional fields safely
+        if 'info' in task:
+            download_info['title'] = task['info'].get('title', 'Unknown')
+            download_info['platform'] = task['info'].get('platform', 'Unknown')
+        else:
+            download_info['title'] = 'Unknown'
+            download_info['platform'] = 'Unknown'
+            
+        if 'filename' in task:
+            download_info['filename'] = task['filename']
+        if 'file_size' in task:
+            download_info['file_size'] = task['file_size']
+        if 'completed_at' in task:
+            download_info['completed_at'] = task['completed_at']
+        if 'error' in task:
+            download_info['error'] = task['error']
+            
+        downloads.append(download_info)
+    
     return {
         'total_downloads': len(download_tasks),
-        'downloads': [
-            {
-                'download_id': download_id,
-                'title': task['info']['title'],
-                'platform': task['info']['platform'],
-                'status': task['status'],
-                'created_at': task['created_at'],
-                'filename': task['filename'],
-                'file_size': task['file_size']
-            }
-            for download_id, task in download_tasks.items()
-        ]
+        'downloads': downloads
     }
 
 @app.get("/platforms")
