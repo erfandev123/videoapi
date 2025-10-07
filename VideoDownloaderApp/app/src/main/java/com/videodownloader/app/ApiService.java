@@ -22,6 +22,7 @@ public class ApiService {
     }
 
     public static void getVideoInfo(String videoUrl, ApiCallback<VideoInfo> callback) {
+        final String finalVideoUrl = videoUrl;
         new AsyncTask<String, Void, VideoInfo>() {
             @Override
             protected VideoInfo doInBackground(String... urls) {
@@ -33,7 +34,7 @@ public class ApiService {
                     connection.setDoOutput(true);
 
                     JSONObject jsonInput = new JSONObject();
-                    jsonInput.put("url", urls[0]);
+                    jsonInput.put("url", finalVideoUrl);
 
                     OutputStream os = connection.getOutputStream();
                     os.write(jsonInput.toString().getBytes(StandardCharsets.UTF_8));
@@ -72,6 +73,9 @@ public class ApiService {
     }
 
     public static void downloadVideo(String videoUrl, String quality, boolean audioOnly, ApiCallback<DownloadResponse> callback) {
+        final String finalVideoUrl = videoUrl;
+        final String finalQuality = quality;
+        final boolean finalAudioOnly = audioOnly;
         new AsyncTask<String, Void, DownloadResponse>() {
             @Override
             protected DownloadResponse doInBackground(String... params) {
@@ -83,9 +87,9 @@ public class ApiService {
                     connection.setDoOutput(true);
 
                     JSONObject jsonInput = new JSONObject();
-                    jsonInput.put("url", params[0]);
-                    jsonInput.put("quality", params[1]);
-                    jsonInput.put("audio_only", Boolean.parseBoolean(params[2]));
+                    jsonInput.put("url", finalVideoUrl);
+                    jsonInput.put("quality", finalQuality);
+                    jsonInput.put("audio_only", finalAudioOnly);
 
                     OutputStream os = connection.getOutputStream();
                     os.write(jsonInput.toString().getBytes(StandardCharsets.UTF_8));
@@ -124,11 +128,12 @@ public class ApiService {
     }
 
     public static void getDownloadStatus(String downloadId, ApiCallback<DownloadStatus> callback) {
+        final String finalDownloadId = downloadId;
         new AsyncTask<String, Void, DownloadStatus>() {
             @Override
             protected DownloadStatus doInBackground(String... params) {
                 try {
-                    URL url = new URL(BASE_URL + "/downloads/" + params[0]);
+                    URL url = new URL(BASE_URL + "/downloads/" + finalDownloadId);
                     HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                     connection.setRequestMethod("GET");
 

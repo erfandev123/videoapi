@@ -13,7 +13,7 @@
         android:padding="16dp">
 
         <!-- Header Card -->
-        <androidx.cardview.widget.CardView
+        <android.support.v7.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
@@ -47,10 +47,10 @@
 
             </LinearLayout>
 
-        </androidx.cardview.widget.CardView>
+        </android.support.v7.widget.CardView>
 
         <!-- URL Input Card -->
-        <androidx.cardview.widget.CardView
+        <android.support.v7.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
@@ -116,10 +116,10 @@
 
             </LinearLayout>
 
-        </androidx.cardview.widget.CardView>
+        </android.support.v7.widget.CardView>
 
         <!-- Quality Selection Card -->
-        <androidx.cardview.widget.CardView
+        <android.support.v7.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
@@ -193,10 +193,10 @@
 
             </LinearLayout>
 
-        </androidx.cardview.widget.CardView>
+        </android.support.v7.widget.CardView>
 
         <!-- Video Info Card -->
-        <androidx.cardview.widget.CardView
+        <android.support.v7.widget.CardView
             android:id="@+id/cardVideoInfo"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -267,10 +267,10 @@
 
             </LinearLayout>
 
-        </androidx.cardview.widget.CardView>
+        </android.support.v7.widget.CardView>
 
         <!-- Download Progress Card -->
-        <androidx.cardview.widget.CardView
+        <android.support.v7.widget.CardView
             android:id="@+id/cardDownloadProgress"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -334,10 +334,10 @@
 
             </LinearLayout>
 
-        </androidx.cardview.widget.CardView>
+        </android.support.v7.widget.CardView>
 
         <!-- Download Result Card -->
-        <androidx.cardview.widget.CardView
+        <android.support.v7.widget.CardView
             android:id="@+id/cardDownloadResult"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -386,10 +386,10 @@
 
             </LinearLayout>
 
-        </androidx.cardview.widget.CardView>
+        </android.support.v7.widget.CardView>
 
         <!-- Supported Platforms Card -->
-        <androidx.cardview.widget.CardView
+        <android.support.v7.widget.CardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="16dp"
@@ -487,7 +487,7 @@
 
             </LinearLayout>
 
-        </androidx.cardview.widget.CardView>
+        </android.support.v7.widget.CardView>
 
     </LinearLayout>
 

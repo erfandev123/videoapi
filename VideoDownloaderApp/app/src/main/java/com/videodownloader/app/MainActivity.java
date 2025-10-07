@@ -14,8 +14,8 @@ import android.widget.ProgressBar;
 import android.widget.RadioButton;
 import android.widget.TextView;
 import android.widget.Toast;
-import androidx.appcompat.app.AppCompatActivity;
-import androidx.cardview.widget.CardView;
+import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.CardView;
 import java.util.Timer;
 import java.util.TimerTask;
 
